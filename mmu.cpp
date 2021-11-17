@@ -30,7 +30,7 @@ typedef struct {
 // define const global variables
 const static int MAX_FRAMES = 128;
 const static int MAX_VPAGES = 64;
-string INPUT_FILE = "./inputs/in1";
+string INPUT_FILE = "./inputs/in11";
 deque<int> randvals;
 vector<Process*> procList;
 deque<instruction> instList;
@@ -55,6 +55,24 @@ class Process {
         vma_l.push_back(nextVma);
     }
 };
+
+void checkInputFile() {
+    for(int i=0; i<procList.size(); i++) {
+        printf("%d %d\n", procList[i]->_pid, procList[i]->_vma_num);
+        for(int j=0; j<procList[i]->_vma_num; j++) {
+            printf("%d %d %d %d\n", procList[i]->vma_l[j].start_virtual_page, procList[i]->vma_l[j].end_virtual_page, procList[i]->vma_l[j].write_protected, procList[i]->vma_l[j].filemapped);
+        }
+    }
+    for(int i=0; i<instList.size(); i++) {
+        printf("%s %d\n", instList[i].inst.c_str(), instList[i].vpage_id);
+    }
+}
+
+void checkRFile() {
+    for(int i=0; i<randvals.size(); i++) {
+        printf("%d\n", randvals[i]);
+    }
+}
 int main(int argc, char *argv[]) {
     // read input 
     string line;
@@ -87,7 +105,7 @@ int main(int argc, char *argv[]) {
             std::getline(inputFile, line, '\n');
         }
         int vmaNum = stoi(line);
-        Process* proc = new Process(pid, vmaNum);
+        Process* proc = new Process(pid++, vmaNum);
         for(int i=0; i<vmaNum; i++) {
             std::getline(inputFile, line, '\n');
             // split string by delimiter white space
@@ -104,6 +122,8 @@ int main(int argc, char *argv[]) {
                 proc->addVma(start_virtual_page, end_virtual_page, write_protected, filemapped);
             }
         }
+        procList.push_back(proc);
+        line = "#";
     }
     line = "#";
     while(line.at(0)=='#') {
@@ -126,5 +146,6 @@ int main(int argc, char *argv[]) {
         } 
     }
     inputFile.close();
-    
+    // checkInputFile();
+    // checkRFile();
 }
