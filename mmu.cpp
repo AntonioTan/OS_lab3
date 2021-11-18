@@ -10,6 +10,7 @@ using namespace std;
 
 class Process;
 class Pager;
+class FIFO;
 
 typedef struct {
     unsigned PRESENT:1;
@@ -18,11 +19,20 @@ typedef struct {
     unsigned WRITE_PROTECT:1;
     unsigned PAGEDOUT:1;
     unsigned FRAME_ADDR:7;
+    unsigned ACCESSED:1; // Has this pte been accessed?
+    unsigned VALID:1; // is this pte valid ?
+    unsigned MAPPED:1;
+    unsigned IN:1;
+    unsigned FIN:1;
+    unsigned FOUT:1;
+    unsigned OUT:1;
 } pte_t;
 
 typedef struct {
     unsigned FRAME_ADDR:7;
     unsigned VPAGE_ADDR:6;
+    unsigned PID: 4;
+    unsigned ACCESSED: 1;
 } frame_t;
 
 typedef struct {
@@ -47,6 +57,8 @@ deque<instruction> instList;
 deque<frame_t> free_pool;
 frame_t frame_table[MAX_FRAMES];
 Pager* THE_PAGER;
+Process* current_process;
+pte_t* current_page;
 
 class Process {
     public:
@@ -67,10 +79,41 @@ class Process {
         };
         vma_l.push_back(nextVma);
     }
+    bool validatePage(int vpage) {
+        for(int i=0; i<vma_l.size(); i++) {
+            if(vma_l[i].start_virtual_page<=vpage&&vma_l[i].end_virtual_page>=vpage) {
+                page_table[vpage].ACCESSED = 1;
+                page_table[vpage].MAPPED = vma_l[i].filemapped;
+                page_table[vpage].VALID = 1;
+                return true;
+            }
+        }
+        page_table[vpage].ACCESSED = 1;
+        page_table[vpage].VALID = 0;
+        return false;
+    }
+
 };
 
 class Pager { 
-    virtual frame_t* select_victim_frame() = 0; // virtual base class
+    public:
+        virtual frame_t* select_victim_frame() = 0; // virtual base class
+};
+
+class FIFO : Pager{
+    public:
+        deque<pte_t *> queue;
+        frame_t *select_victim_frame() {
+            if(queue.empty()) {
+                return NULL;
+            } else {
+                pte_t *nextPte = queue.front();
+                return &frame_table[nextPte->FRAME_ADDR];
+            }
+        }
+        void add_page(pte_t *nextPage) {
+            queue.push_back(nextPage);
+        }
 };
 
 frame_t *allocate_frame_from_free_list() {
@@ -107,6 +150,48 @@ void checkRFile() {
         printf("%d\n", randvals[i]);
     }
 }
+
+bool get_next_instruction(string *operation, int *vpage) {
+    if(instList.empty()) {
+        return false;
+    } else {
+        instruction nextInst = instList.front();
+        operation = &nextInst.inst;
+        vpage = &nextInst.vpage_id;
+        instList.pop_front();
+        return true;
+    }
+}
+
+void Simulation() {
+    string operation = "";
+    int vpage = 0;
+    while (get_next_instruction(&operation, &vpage)) {
+        // TODO: handle special case of “c” and “e” instruction 
+        if(operation=="c") {
+            current_process = &procList[vpage];
+            continue;
+        }
+        // now the real instructions for read and write
+        pte_t* pte = &current_process->page_table[vpage];
+        if(!pte->PRESENT) {
+            // this pte can be invalid
+            // this in reality generates the page fault exception and now you execute 
+            // verify this is actually a valid page in a vma if not raise error and next inst
+            if((pte->ACCESSED==0&&!current_process->validatePage(vpage))||(pte->ACCESSED==1&&pte->VALID==0)) { 
+                    // raise SEGV
+                    printf("%s\n", "SEGV");
+                    // next inst
+                    continue;
+            } 
+            frame_t *newframe = get_frame();
+            if(newframe->ACCESSED==0) {
+                newframe->ACCESSED=1;
+            }
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     // read input 
     string line;
