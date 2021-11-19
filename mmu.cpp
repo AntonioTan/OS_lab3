@@ -4,6 +4,8 @@
 #include <string>
 #include <sstream>
 #include <vector>
+#include <stdlib.h>
+#include <set>
 #define  pidvpn_to_pte(pid,vpn)    (procList[pid].page_table[vpn])
 
 using namespace std;
@@ -22,10 +24,6 @@ typedef struct {
     unsigned ACCESSED:1; // Has this pte been accessed?
     unsigned VALID:1; // is this pte valid ?
     unsigned MAPPED:1;
-    unsigned IN:1;
-    unsigned FIN:1;
-    unsigned FOUT:1;
-    unsigned OUT:1;
 } pte_t;
 
 typedef struct {
@@ -43,18 +41,29 @@ typedef struct {
 } vma;
 
 typedef struct {
-    string inst;
+    char inst;
     int vpage_id;
 } instruction;
 
 // define const global variables
-const static int MAX_FRAMES = 128;
-const static int MAX_VPAGES = 64;
+const static int MAX_FRAMES = 16;
+const static int MAX_VPAGES = 128;
+const static string MAP = "MAP";
+const static string UNMAP = "UNMAP";
+const static string FIN = "FIN";
+const static string IN = "IN";
+const static string FOUT = "FOUT";
+const static string OUT = "OUT";
+const static string SEGV = "SEGV";
+const static string SEGPROT = "SEGPROT";
+const static string ZERO = "ZERO";
+
+
 string INPUT_FILE = "./inputs/in11";
 deque<int> randvals;
 vector<Process> procList;
 deque<instruction> instList;
-deque<frame_t> free_pool;
+deque<frame_t *> free_pool;
 frame_t frame_table[MAX_FRAMES];
 Pager* THE_PAGER;
 Process* current_process;
@@ -78,6 +87,18 @@ class Process {
             .filemapped = filemapped
         };
         vma_l.push_back(nextVma);
+        for(int i=0; i<MAX_VPAGES; i++) {
+            pte_t *pte = &page_table[i];
+            pte->REFERENCED = 0;
+            pte->PRESENT = 0;
+            pte->MODIFIED = 0;
+            pte->WRITE_PROTECT = 0;
+            pte->PAGEDOUT = 0;
+            pte->FRAME_ADDR = 0;
+            pte->ACCESSED = 0;
+            pte->VALID = 0;
+            pte->MAPPED = 0;
+        }
     }
     bool validatePage(int vpage) {
         for(int i=0; i<vma_l.size(); i++) {
@@ -85,6 +106,7 @@ class Process {
                 page_table[vpage].ACCESSED = 1;
                 page_table[vpage].MAPPED = vma_l[i].filemapped;
                 page_table[vpage].VALID = 1;
+                page_table[vpage].WRITE_PROTECT = vma_l[i].write_protected;
                 return true;
             }
         }
@@ -98,9 +120,11 @@ class Process {
 class Pager { 
     public:
         virtual frame_t* select_victim_frame() = 0; // virtual base class
+        virtual void add_page(pte_t *nextPage) = 0;
+        virtual void remove_page(set<int> s) = 0;
 };
 
-class FIFO : Pager{
+class FIFO : public Pager{
     public:
         deque<pte_t *> queue;
         frame_t *select_victim_frame() {
@@ -108,11 +132,27 @@ class FIFO : Pager{
                 return NULL;
             } else {
                 pte_t *nextPte = queue.front();
+                queue.pop_front();
                 return &frame_table[nextPte->FRAME_ADDR];
             }
         }
         void add_page(pte_t *nextPage) {
             queue.push_back(nextPage);
+        }
+        void remove_page(set<int> s)  {
+            deque<pte_t *> remains;
+            while(!queue.empty()) {
+                if(s.find(queue.front()->FRAME_ADDR)!=s.end()) {
+                    queue.pop_front();
+                } else {
+                    remains.push_back(queue.front());
+                    queue.pop_front();
+                }
+            }
+            while(!remains.empty()) {
+                queue.push_back(remains.front());
+                remains.pop_front();
+            }
         }
 };
 
@@ -120,7 +160,7 @@ frame_t *allocate_frame_from_free_list() {
     if(free_pool.empty()) {
         return NULL;
     } else {
-        frame_t *rst = &free_pool.front();
+        frame_t *rst = free_pool.front();
         free_pool.pop_front();
         return rst;
     }
@@ -141,7 +181,7 @@ void checkInputFile() {
         }
     }
     for(int i=0; i<instList.size(); i++) {
-        printf("%s %d\n", instList[i].inst.c_str(), instList[i].vpage_id);
+        printf("%c %d\n", instList[i].inst, instList[i].vpage_id);
     }
 }
 
@@ -151,43 +191,120 @@ void checkRFile() {
     }
 }
 
-bool get_next_instruction(string *operation, int *vpage) {
+bool get_next_instruction(char *operation, int *vpage) {
     if(instList.empty()) {
         return false;
     } else {
         instruction nextInst = instList.front();
-        operation = &nextInst.inst;
-        vpage = &nextInst.vpage_id;
+        *operation = nextInst.inst;
+        *vpage = nextInst.vpage_id;
         instList.pop_front();
         return true;
     }
 }
 
 void Simulation() {
-    string operation = "";
+    char operation;
     int vpage = 0;
+    int inst_cnt = 0;
     while (get_next_instruction(&operation, &vpage)) {
         // TODO: handle special case of “c” and “e” instruction 
-        if(operation=="c") {
+        printf("%d: ==> %c %d\n", inst_cnt++, operation, vpage);
+        if(operation=='c') {
             current_process = &procList[vpage];
             continue;
         }
+        if(operation=='e') {
+            printf("EXIT current process %d\n", current_process->_pid);
+            
+            set<int> unmap_frame_set;
+            for(int i=0; i<MAX_VPAGES; i++) {
+                if(current_process->validatePage(i)) {
+                    if(current_process->page_table[i].PRESENT) {
+                        pte_t *curpte = &pidvpn_to_pte(current_process->_pid, i);
+                        frame_t *curframe = &frame_table[curpte->FRAME_ADDR];
+                        curframe->ACCESSED = 0;
+                        unmap_frame_set.insert(curframe->FRAME_ADDR);
+                        // cout << "temp" << curframe->FRAME_ADDR << endl;
+                        printf(" %s %d:%d\n", UNMAP.c_str(), curframe->PID, curframe->VPAGE_ADDR);
+                        free_pool.push_back(curframe);
+                        if(current_process->page_table[i].MAPPED) {
+                            printf(" %s\n", FOUT.c_str());
+                        }
+                    }
+                }
+            }
+            THE_PAGER->remove_page(unmap_frame_set);
+            
+            current_process = NULL;
+            continue;
+        }
         // now the real instructions for read and write
-        pte_t* pte = &current_process->page_table[vpage];
-        if(!pte->PRESENT) {
+        pte_t* pte = &(current_process->page_table[vpage]);
+        if(pte->PRESENT!=1) {
             // this pte can be invalid
             // this in reality generates the page fault exception and now you execute 
             // verify this is actually a valid page in a vma if not raise error and next inst
             if((pte->ACCESSED==0&&!current_process->validatePage(vpage))||(pte->ACCESSED==1&&pte->VALID==0)) { 
                     // raise SEGV
-                    printf("%s\n", "SEGV");
+                    printf(" %s\n", "SEGV");
                     // next inst
                     continue;
             } 
+            // assign new frame to the page
             frame_t *newframe = get_frame();
+
+            pte_t *last_pte = &pidvpn_to_pte(newframe->PID, newframe->VPAGE_ADDR);
             if(newframe->ACCESSED==0) {
-                newframe->ACCESSED=1;
+                newframe->ACCESSED = 1;
+            } else {
+                printf(" %s %d:%d\n", UNMAP.c_str(), newframe->PID, newframe->VPAGE_ADDR);
+                last_pte->PRESENT = 0;
+                if(last_pte->MODIFIED) {
+                    // (note once the PAGEDOUT flag is set it will never be reset as it indicates there is content on the swap device
+                    last_pte->PAGEDOUT = 1;
+                    last_pte->MODIFIED = 0;
+                    if(last_pte->MAPPED) {
+                        printf(" %s\n", FOUT.c_str());
+                    } else {
+                        printf(" %s\n", OUT.c_str());
+                    }
+                }
             }
+            if(pte->PAGEDOUT==1) {
+                if(pte->MAPPED) {
+                    printf(" %s\n", FIN.c_str());
+                } else {
+                    printf(" %s\n", IN.c_str());
+                }
+            } else {
+                // not pagedout before 
+                if(pte->MAPPED==0) {
+                    printf(" %s\n", ZERO.c_str());
+                } else {
+                    printf(" %s\n", FIN.c_str());
+                }
+            }
+            // MAP part
+            printf(" %s %d\n", MAP.c_str(), newframe->FRAME_ADDR);
+            pte->FRAME_ADDR = newframe->FRAME_ADDR;
+            newframe->PID = current_process->_pid;
+            newframe->VPAGE_ADDR = vpage;
+            pte->PRESENT = 1;
+            THE_PAGER->add_page(pte);
+        }
+        // the vpage is backed by a frame and the instruction can proceed in hardware
+        if(operation=='w') {
+            if(pte->WRITE_PROTECT) {
+                pte->REFERENCED = 1;
+                printf(" %s\n", SEGPROT.c_str());
+            } else {
+                pte->REFERENCED = 1;
+                pte->MODIFIED = 1;
+            }
+        }
+        if(operation=='r') {
+            pte->REFERENCED = 1;
         }
     }
 }
@@ -228,18 +345,9 @@ int main(int argc, char *argv[]) {
         for(int i=0; i<vmaNum; i++) {
             std::getline(inputFile, line, '\n');
             // split string by delimiter white space
-            istringstream iss(line);
-            vector<string> tokens;
-            copy(istream_iterator<string>(iss),
-                istream_iterator<string>(),
-                back_inserter(tokens));
-            if(tokens.size()==4) {
-                int start_virtual_page = stoi(tokens[0]);
-                int end_virtual_page = stoi(tokens[1]);
-                int write_protected = stoi(tokens[2]);
-                int filemapped = stoi(tokens[3]);
-                proc.addVma(start_virtual_page, end_virtual_page, write_protected, filemapped);
-            }
+            int start_virtual_page, end_virtual_page, write_protected, filemapped;
+            sscanf(line.c_str(), "%d %d %d %d", &start_virtual_page, &end_virtual_page, &write_protected, &filemapped);
+            proc.addVma(start_virtual_page, end_virtual_page, write_protected, filemapped);
         }
         procList.push_back(proc);
         line = "#";
@@ -249,28 +357,34 @@ int main(int argc, char *argv[]) {
         std::getline(inputFile, line, '\n');
     }
     while(!inputFile.eof()) {
+        if(line.at(0)=='#') {
+            break;
+        }
+        char inst;
+        int vpage_id;
+        sscanf(line.c_str(), "%c %d", &inst, &vpage_id);
+        instruction nextInst = {
+            .inst = inst,
+            .vpage_id = vpage_id
+        };
+        instList.push_back(nextInst);
+        
         std::getline(inputFile, line, '\n');
-        istringstream iss(line);
-        vector<string> tokens;
-        copy(istream_iterator<string>(iss),
-                    istream_iterator<string>(),
-                    back_inserter(tokens));
-        if(tokens.size()==2) {
-            int vpage_id = stoi(tokens[1]);
-            instruction nextInst = {
-                .inst = tokens[0],
-                .vpage_id = vpage_id
-            };
-            instList.push_back(nextInst);
-        } 
     }
     inputFile.close();
     // checkInputFile();
     // checkRFile();
     
     // initialize frame_table
+    // initialize free pool
     for(int i=0; i<MAX_FRAMES; i++) {
         frame_table[i].FRAME_ADDR = i;
+        frame_table[i].PID = 0;
+        frame_table[i].VPAGE_ADDR = 0;
+        frame_table[i].ACCESSED = 0;
+        free_pool.push_back(&frame_table[i]);
     }
+    THE_PAGER = new FIFO();
+    Simulation();
     
 }
