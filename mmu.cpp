@@ -119,40 +119,20 @@ class Process {
 
 class Pager { 
     public:
+        int hand;
         virtual frame_t* select_victim_frame() = 0; // virtual base class
-        virtual void add_page(pte_t *nextPage) = 0;
-        virtual void remove_page(set<int> s) = 0;
 };
 
 class FIFO : public Pager{
     public:
-        deque<pte_t *> queue;
+        int hand;
+        FIFO() {
+            hand = 0;
+        }
         frame_t *select_victim_frame() {
-            if(queue.empty()) {
-                return NULL;
-            } else {
-                pte_t *nextPte = queue.front();
-                queue.pop_front();
-                return &frame_table[nextPte->FRAME_ADDR];
-            }
-        }
-        void add_page(pte_t *nextPage) {
-            queue.push_back(nextPage);
-        }
-        void remove_page(set<int> s)  {
-            deque<pte_t *> remains;
-            while(!queue.empty()) {
-                if(s.find(queue.front()->FRAME_ADDR)!=s.end()) {
-                    queue.pop_front();
-                } else {
-                    remains.push_back(queue.front());
-                    queue.pop_front();
-                }
-            }
-            while(!remains.empty()) {
-                queue.push_back(remains.front());
-                remains.pop_front();
-            }
+            frame_t *rst = &frame_table[hand++];
+            hand = hand%MAX_FRAMES;
+            return rst;
         }
 };
 
@@ -225,17 +205,14 @@ void Simulation() {
                         frame_t *curframe = &frame_table[curpte->FRAME_ADDR];
                         curframe->ACCESSED = 0;
                         unmap_frame_set.insert(curframe->FRAME_ADDR);
-                        // cout << "temp" << curframe->FRAME_ADDR << endl;
                         printf(" %s %d:%d\n", UNMAP.c_str(), curframe->PID, curframe->VPAGE_ADDR);
                         free_pool.push_back(curframe);
-                        if(current_process->page_table[i].MAPPED) {
+                        if(current_process->page_table[i].MODIFIED==1&&current_process->page_table[i].MAPPED) {
                             printf(" %s\n", FOUT.c_str());
                         }
                     }
                 }
             }
-            THE_PAGER->remove_page(unmap_frame_set);
-            
             current_process = NULL;
             continue;
         }
@@ -291,7 +268,6 @@ void Simulation() {
             newframe->PID = current_process->_pid;
             newframe->VPAGE_ADDR = vpage;
             pte->PRESENT = 1;
-            THE_PAGER->add_page(pte);
         }
         // the vpage is backed by a frame and the instruction can proceed in hardware
         if(operation=='w') {
@@ -307,6 +283,10 @@ void Simulation() {
             pte->REFERENCED = 1;
         }
     }
+}
+
+public void Summary() {
+    
 }
 
 int main(int argc, char *argv[]) {
@@ -386,5 +366,6 @@ int main(int argc, char *argv[]) {
     }
     THE_PAGER = new FIFO();
     Simulation();
+    Summary();
     
 }
