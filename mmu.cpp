@@ -6,6 +6,7 @@
 #include <vector>
 #include <stdlib.h>
 #include <set>
+#include <math.h>
 #define  pidvpn_to_pte(pid,vpn)    (procList[pid].page_table[vpn])
 
 using namespace std;
@@ -17,25 +18,27 @@ class FIFO;
 class Clock;
 class NRU;
 class Random;
+class Aging;
 int myrandom();
 
 typedef struct {
-    unsigned PRESENT:1;
-    unsigned REFERENCED:1;
-    unsigned MODIFIED:1;
-    unsigned WRITE_PROTECT:1;
-    unsigned PAGEDOUT:1;
-    unsigned FRAME_ADDR:7;
-    unsigned ACCESSED:1; // Has this pte been accessed?
-    unsigned VALID:1; // is this pte valid ?
-    unsigned MAPPED:1;
+    unsigned int PRESENT:1;
+    unsigned int REFERENCED:1;
+    unsigned int MODIFIED:1;
+    unsigned int WRITE_PROTECT:1;
+    unsigned int PAGEDOUT:1;
+    unsigned int FRAME_ADDR:7;
+    unsigned int ACCESSED:1; // Has this pte been accessed?
+    unsigned int VALID:1; // is this pte valid ?
+    unsigned int MAPPED:1;
 } pte_t;
 
 typedef struct {
-    unsigned FRAME_ADDR:7;
-    unsigned VPAGE_ADDR:6;
-    unsigned PID: 4;
-    unsigned ACCESSED: 1;
+    unsigned int FRAME_ADDR:7;
+    unsigned int VPAGE_ADDR:6;
+    unsigned int PID: 4;
+    unsigned int ACCESSED: 1;
+    unsigned AGE;
 } frame_t;
 
 typedef struct {
@@ -67,6 +70,7 @@ const static string FIFO_alg = "FIFO";
 const static string Clock_alg = "Clock";
 const static string NRU_alg = "NRU";
 const static string Random_alg = "Random";
+const static string Aging_alg = "Aging";
 
 const static int RW_cost = 1;
 const static int switch_cost = 130;
@@ -179,6 +183,7 @@ class Pager {
     public:
         int hand;
         virtual frame_t* select_victim_frame() = 0; // virtual base class
+        virtual void resetAge(int target) = 0;
 };
 
 class FIFO : public Pager{
@@ -191,6 +196,9 @@ class FIFO : public Pager{
             frame_t *rst = &frame_table[hand++];
             hand = hand%MAX_FRAMES;
             return rst;
+        }
+        void resetAge(int target) {
+
         }
 };
 
@@ -208,6 +216,9 @@ class Clock : public Pager {
             frame_t *rst = &frame_table[hand++];
             hand = hand%MAX_FRAMES;
             return rst;
+        }
+        void resetAge(int target) {
+
         }
 
 };
@@ -238,13 +249,52 @@ class NRU : public Pager {
             }
             return &frame_table[hand];
         }
+        void resetAge(int target) {
+
+        }
 };
 
 class Random : public Pager {
     public:
-    frame_t *select_victim_frame() {
-        return &frame_table[myrandom()];
-    }
+        frame_t *select_victim_frame() {
+            return &frame_table[myrandom()];
+        }
+        void resetAge(int target) {
+
+        }
+};
+
+class Aging : public Pager {
+    public:
+        int hand;
+        Aging() {
+            hand = 0;
+        }
+        frame_t *select_victim_frame() {
+            // printf("FT\n");
+            int index = hand;
+            for(int i=0; i<MAX_FRAMES; i++) {
+                int curIndex = (hand+i)%MAX_FRAMES;
+                frame_t *curFrame = &frame_table[curIndex];
+                curFrame->AGE /= 2;
+                if(pidvpn_to_pte(curFrame->PID, curFrame->VPAGE_ADDR).REFERENCED) {
+                    // curFrame->AGE = (curFrame->AGE | 0x80000000);
+                    curFrame->AGE += pow(2, 31);
+                }
+                (&pidvpn_to_pte(curFrame->PID, curFrame->VPAGE_ADDR))->REFERENCED = 0;
+                if(curFrame->AGE<frame_table[index].AGE) {
+                    index = curIndex;
+                }
+                // printf("%d: %d\n", i, frame_table[index].AGE);
+            }
+            frame_t *rst = &frame_table[index];
+            hand = (index+1)%MAX_FRAMES;
+            return rst;
+        }
+        void resetAge(int target) {
+            (&frame_table[target])->AGE = 0;
+        }
+
 };
 
 frame_t *allocate_frame_from_free_list() {
@@ -325,7 +375,6 @@ void Simulation() {
                 if(current_process->validatePage(i)) {
                     if(current_process->page_table[i].PRESENT) {
                         frame_t *curframe = &frame_table[curpte->FRAME_ADDR];
-                        curframe->ACCESSED = 0;
                         unmap_frame_set.insert(curframe->FRAME_ADDR);
                         pstatList[current_process->_pid].U += 1;
                         cost += U_cost;
@@ -336,10 +385,21 @@ void Simulation() {
                             cost += FO_cost;
                             printf(" %s\n", FOUT.c_str());
                         }
+                        curframe->PID = 0;
+                        curframe->VPAGE_ADDR = 0;
+                        curframe->ACCESSED = 0;
+                        curframe->AGE = 0;
                     }
                 }
+                curpte->REFERENCED = 0;
                 curpte->PRESENT = 0;
+                curpte->MODIFIED = 0;
+                curpte->WRITE_PROTECT = 0;
                 curpte->PAGEDOUT = 0;
+                curpte->FRAME_ADDR = 0;
+                curpte->ACCESSED = 0;
+                curpte->VALID = 0;
+                curpte->MAPPED = 0;
             }
             current_process = NULL;
             continue;
@@ -348,92 +408,94 @@ void Simulation() {
         pte_t* pte = &(current_process->page_table[vpage]);
         if(operation=='r'||operation=='w') {
             cost += 1;
-            pte->REFERENCED = 1;    
-        }
-        if(pte->PRESENT!=1) {
-            // this pte can be invalid
-            // this in reality generates the page fault exception and now you execute 
-            // verify this is actually a valid page in a vma if not raise error and next inst
-            if((pte->ACCESSED==0&&!current_process->validatePage(vpage))||(pte->ACCESSED==1&&pte->VALID==0)) { 
-                    // raise SEGV
-                    pstatList[current_process->_pid].SV += 1;
-                    cost += SV_cost;
-                    printf(" %s\n", SEGV.c_str());
-                    // next inst
-                    continue;
-            } 
-            // assign new frame to the page
-            frame_t *newframe = get_frame();
+            if(pte->PRESENT!=1) {
+                // this pte can be invalid
+                // this in reality generates the page fault exception and now you execute 
+                // verify this is actually a valid page in a vma if not raise error and next inst
+                if((pte->ACCESSED==0&&!current_process->validatePage(vpage))||(pte->ACCESSED==1&&pte->VALID==0)) { 
+                        // raise SEGV
+                        pstatList[current_process->_pid].SV += 1;
+                        cost += SV_cost;
+                        printf(" %s\n", SEGV.c_str());
+                        // next inst
+                        continue;
+                } 
+                // assign new frame to the page
+                frame_t *newframe = get_frame();
 
-            pte_t *last_pte = &pidvpn_to_pte(newframe->PID, newframe->VPAGE_ADDR);
-            if(newframe->ACCESSED==0) {
-                newframe->ACCESSED = 1;
-            } else {
-                pstatList[newframe->PID].U += 1;
-                cost += U_cost;
-                printf(" %s %d:%d\n", UNMAP.c_str(), newframe->PID, newframe->VPAGE_ADDR);
-                last_pte->PRESENT = 0;
-                if(last_pte->MODIFIED) {
-                    // (note once the PAGEDOUT flag is set it will never be reset as it indicates there is content on the swap device
-                    last_pte->PAGEDOUT = 1;
-                    last_pte->MODIFIED = 0;
-                    if(last_pte->MAPPED) {
-                        cost += FO_cost;
-                        pstatList[newframe->PID].FO += 1;
-                        printf(" %s\n", FOUT.c_str());
-                    } else {
-                        pstatList[newframe->PID].O += 1;
-                        cost += O_cost;
-                        printf(" %s\n", OUT.c_str());
+                pte_t *last_pte = &pidvpn_to_pte(newframe->PID, newframe->VPAGE_ADDR);
+                if(newframe->ACCESSED==0) {
+                    newframe->ACCESSED = 1;
+                } else {
+                    pstatList[newframe->PID].U += 1;
+                    cost += U_cost;
+                    printf(" %s %d:%d\n", UNMAP.c_str(), newframe->PID, newframe->VPAGE_ADDR);
+                    last_pte->PRESENT = 0;
+                    if(last_pte->MODIFIED) {
+                        // (note once the PAGEDOUT flag is set it will never be reset as it indicates there is content on the swap device
+                        last_pte->MODIFIED = 0;
+                        if(last_pte->MAPPED) {
+                            cost += FO_cost;
+                            pstatList[newframe->PID].FO += 1;
+                            printf(" %s\n", FOUT.c_str());
+                        } else {
+                            pstatList[newframe->PID].O += 1;
+                            last_pte->PAGEDOUT = 1;
+                            cost += O_cost;
+                            printf(" %s\n", OUT.c_str());
+                        }
                     }
                 }
-            }
-            if(pte->PAGEDOUT==1) {
-                if(pte->MAPPED) {
-                    cost += FI_cost;
-                    pstatList[current_process->_pid].FI += 1;
-                    printf(" %s\n", FIN.c_str());
+                if(pte->PAGEDOUT==1) {
+                    if(pte->MAPPED) {
+                        cost += FI_cost;
+                        pstatList[current_process->_pid].FI += 1;
+                        printf(" %s\n", FIN.c_str());
+                    } else {
+                        cost += I_cost;
+                        pstatList[current_process->_pid].I += 1;
+                        printf(" %s\n", IN.c_str());
+                    }
                 } else {
-                    cost += I_cost;
-                    pstatList[current_process->_pid].I += 1;
-                    printf(" %s\n", IN.c_str());
+                    // not pagedout before 
+                    if(pte->MAPPED==0) {
+                        cost += Z_cost;
+                        pstatList[current_process->_pid].Z += 1;
+                        printf(" %s\n", ZERO.c_str());
+                    } else {
+                        cost += FI_cost;
+                        pstatList[current_process->_pid].FI += 1;
+                        printf(" %s\n", FIN.c_str());
+                    }
                 }
-            } else {
-                // not pagedout before 
-                if(pte->MAPPED==0) {
-                    cost += Z_cost;
-                    pstatList[current_process->_pid].Z += 1;
-                    printf(" %s\n", ZERO.c_str());
+                // MAP part
+                pstatList[current_process->_pid].M += 1;
+                cost += M_cost;
+                printf(" %s %d\n", MAP.c_str(), newframe->FRAME_ADDR);
+                THE_PAGER->resetAge(newframe->FRAME_ADDR);
+                pte->FRAME_ADDR = newframe->FRAME_ADDR;
+                newframe->PID = current_process->_pid;
+                newframe->VPAGE_ADDR = vpage;
+                pte->PRESENT = 1;
+                // reeset ref for NRU algorithm
+                // THE_PAGER->resetAge(newframe->FRAME_ADDR);
+            }
+            pte->REFERENCED = 1;  
+            // the vpage is backed by a frame and the instruction can proceed in hardware
+            if(operation=='w') {
+                if(pte->WRITE_PROTECT) {
+                    pte->REFERENCED = 1;
+                    pstatList[current_process->_pid].SP += 1;
+                    cost += SP_cost;
+                    printf(" %s\n", SEGPROT.c_str());
                 } else {
-                    cost += FI_cost;
-                    pstatList[current_process->_pid].FI += 1;
-                    printf(" %s\n", FIN.c_str());
+                    pte->REFERENCED = 1;
+                    pte->MODIFIED = 1;
                 }
             }
-            // MAP part
-            pstatList[current_process->_pid].M += 1;
-            cost += M_cost;
-            printf(" %s %d\n", MAP.c_str(), newframe->FRAME_ADDR);
-            pte->FRAME_ADDR = newframe->FRAME_ADDR;
-            newframe->PID = current_process->_pid;
-            newframe->VPAGE_ADDR = vpage;
-            pte->PRESENT = 1;
-            // reeset ref for NRU algorithm
-        }
-        // the vpage is backed by a frame and the instruction can proceed in hardware
-        if(operation=='w') {
-            if(pte->WRITE_PROTECT) {
+            if(operation=='r') {
                 pte->REFERENCED = 1;
-                pstatList[current_process->_pid].SP += 1;
-                cost += SP_cost;
-                printf(" %s\n", SEGPROT.c_str());
-            } else {
-                pte->REFERENCED = 1;
-                pte->MODIFIED = 1;
             }
-        }
-        if(operation=='r') {
-            pte->REFERENCED = 1;
         }
     }
 }
@@ -459,6 +521,8 @@ void Summary() {
     for(int i=0; i<MAX_FRAMES; i++) {
         if(frame_table[i].ACCESSED==1) {
             printf(" %d:%d", frame_table[i].PID, frame_table[i].VPAGE_ADDR);
+        } else {
+            printf(" *");
         }
     }
     printf("\n");
@@ -469,8 +533,8 @@ void Summary() {
 }
 
 int main(int argc, char *argv[]) {
-    alg_name = Random_alg;
-    THE_PAGER = new Random();
+    alg_name = Aging_alg;
+    THE_PAGER = new Aging();
     // read input 
     string line;
     // read rand file 
@@ -545,6 +609,7 @@ int main(int argc, char *argv[]) {
         frame_table[i].PID = 0;
         frame_table[i].VPAGE_ADDR = 0;
         frame_table[i].ACCESSED = 0;
+        frame_table[i].AGE = 0;
         free_pool.push_back(&frame_table[i]);
     }
     Simulation();
