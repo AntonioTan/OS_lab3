@@ -16,6 +16,8 @@ class Pager;
 class FIFO;
 class Clock;
 class NRU;
+class Random;
+int myrandom();
 
 typedef struct {
     unsigned PRESENT:1;
@@ -87,7 +89,7 @@ unsigned long process_exits = 0;
 unsigned long long cost = 0;
 
 
-string INPUT_FILE = "./inputs/in10";
+string INPUT_FILE = "./inputs/in11";
 deque<int> randvals;
 vector<Process> procList;
 vector<Pstat> pstatList;
@@ -238,6 +240,13 @@ class NRU : public Pager {
         }
 };
 
+class Random : public Pager {
+    public:
+    frame_t *select_victim_frame() {
+        return &frame_table[myrandom()];
+    }
+};
+
 frame_t *allocate_frame_from_free_list() {
     if(free_pool.empty()) {
         return NULL;
@@ -285,13 +294,14 @@ bool get_next_instruction(char *operation, int *vpage) {
     }
 }
 
-void resetRef() {
-    for(int i=0; i<MAX_FRAMES; i++) {
-        if(frame_table[i].ACCESSED) {
-            (&pidvpn_to_pte(frame_table[i].PID, frame_table[i].VPAGE_ADDR))->REFERENCED = 0;
-        }
-    }
+int myrandom() { 
+    int nextRand = randvals.front();
+    int rst = nextRand % MAX_FRAMES; 
+    randvals.pop_front();
+    randvals.push_back(nextRand);
+    return rst;
 }
+
 
 void Simulation() {
     char operation;
@@ -459,8 +469,8 @@ void Summary() {
 }
 
 int main(int argc, char *argv[]) {
-    alg_name = NRU_alg;
-    THE_PAGER = new NRU();
+    alg_name = Random_alg;
+    THE_PAGER = new Random();
     // read input 
     string line;
     // read rand file 
