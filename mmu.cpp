@@ -10,6 +10,7 @@
 
 using namespace std;
 
+class Pstat;
 class Process;
 class Pager;
 class FIFO;
@@ -45,9 +46,10 @@ typedef struct {
     int vpage_id;
 } instruction;
 
+
 // define const global variables
 const static int MAX_FRAMES = 16;
-const static int MAX_VPAGES = 128;
+const static int MAX_VPAGES = 64;
 const static string MAP = "MAP";
 const static string UNMAP = "UNMAP";
 const static string FIN = "FIN";
@@ -58,16 +60,61 @@ const static string SEGV = "SEGV";
 const static string SEGPROT = "SEGPROT";
 const static string ZERO = "ZERO";
 
+const static int RW_cost = 1;
+const static int switch_cost = 130;
+const static int exit_cost = 1250;
+const static int M_cost = 300;
+const static int U_cost = 400;
+const static int I_cost = 3100;
+const static int O_cost = 2700;
+const static int FI_cost = 2800;
+const static int FO_cost = 2400;
+const static int Z_cost = 140;
+const static int SV_cost = 340;
+const static int SP_cost = 420;
+
+
+
+unsigned long inst_count = 0;
+unsigned long ctx_switches = 0;
+unsigned long process_exits = 0;
+unsigned long long cost = 0;
+
 
 string INPUT_FILE = "./inputs/in11";
 deque<int> randvals;
 vector<Process> procList;
+vector<Pstat> pstatList;
 deque<instruction> instList;
 deque<frame_t *> free_pool;
 frame_t frame_table[MAX_FRAMES];
 Pager* THE_PAGER;
 Process* current_process;
 pte_t* current_page;
+
+class Pstat {
+    public:
+    unsigned long U;
+    unsigned long M;
+    unsigned long I;
+    unsigned long O;
+    unsigned long FI;
+    unsigned long FO;
+    unsigned long Z;
+    unsigned long SV;
+    unsigned long SP;
+    Pstat() {
+        U = 0;
+        M = 0;
+        I = 0;
+        O = 0;
+        FI = 0;
+        FO = 0;
+        Z = 0;
+        SV = 0;
+        SP = 0;
+    }
+};
 
 class Process {
     public:
@@ -186,32 +233,43 @@ bool get_next_instruction(char *operation, int *vpage) {
 void Simulation() {
     char operation;
     int vpage = 0;
-    int inst_cnt = 0;
     while (get_next_instruction(&operation, &vpage)) {
         // TODO: handle special case of “c” and “e” instruction 
-        printf("%d: ==> %c %d\n", inst_cnt++, operation, vpage);
+        printf("%lu: ==> %c %d\n", inst_count++, operation, vpage);
+        if(operation=='r'||operation=='w') {
+            cost += 1;
+        }
         if(operation=='c') {
             current_process = &procList[vpage];
+            ctx_switches += 1;
+            cost += switch_cost;
             continue;
         }
         if(operation=='e') {
+            process_exits += 1;
+            cost += exit_cost;
             printf("EXIT current process %d\n", current_process->_pid);
-            
             set<int> unmap_frame_set;
             for(int i=0; i<MAX_VPAGES; i++) {
+                pte_t *curpte = &pidvpn_to_pte(current_process->_pid, i);
                 if(current_process->validatePage(i)) {
                     if(current_process->page_table[i].PRESENT) {
-                        pte_t *curpte = &pidvpn_to_pte(current_process->_pid, i);
                         frame_t *curframe = &frame_table[curpte->FRAME_ADDR];
                         curframe->ACCESSED = 0;
                         unmap_frame_set.insert(curframe->FRAME_ADDR);
+                        pstatList[current_process->_pid].U += 1;
+                        cost += U_cost;
                         printf(" %s %d:%d\n", UNMAP.c_str(), curframe->PID, curframe->VPAGE_ADDR);
                         free_pool.push_back(curframe);
-                        if(current_process->page_table[i].MODIFIED==1&&current_process->page_table[i].MAPPED) {
+                        if(curpte->MODIFIED&&curpte->MAPPED) {
+                            pstatList[current_process->_pid].FO += 1;
+                            cost += FO_cost;
                             printf(" %s\n", FOUT.c_str());
                         }
                     }
                 }
+                curpte->PRESENT = 0;
+                curpte->PAGEDOUT = 0;
             }
             current_process = NULL;
             continue;
@@ -224,7 +282,9 @@ void Simulation() {
             // verify this is actually a valid page in a vma if not raise error and next inst
             if((pte->ACCESSED==0&&!current_process->validatePage(vpage))||(pte->ACCESSED==1&&pte->VALID==0)) { 
                     // raise SEGV
-                    printf(" %s\n", "SEGV");
+                    pstatList[current_process->_pid].SV += 1;
+                    cost += SV_cost;
+                    printf(" %s\n", SEGV.c_str());
                     // next inst
                     continue;
             } 
@@ -235,6 +295,8 @@ void Simulation() {
             if(newframe->ACCESSED==0) {
                 newframe->ACCESSED = 1;
             } else {
+                pstatList[newframe->PID].U += 1;
+                cost += U_cost;
                 printf(" %s %d:%d\n", UNMAP.c_str(), newframe->PID, newframe->VPAGE_ADDR);
                 last_pte->PRESENT = 0;
                 if(last_pte->MODIFIED) {
@@ -242,27 +304,41 @@ void Simulation() {
                     last_pte->PAGEDOUT = 1;
                     last_pte->MODIFIED = 0;
                     if(last_pte->MAPPED) {
+                        cost += FO_cost;
+                        pstatList[newframe->PID].FO += 1;
                         printf(" %s\n", FOUT.c_str());
                     } else {
+                        pstatList[newframe->PID].O += 1;
+                        cost += O_cost;
                         printf(" %s\n", OUT.c_str());
                     }
                 }
             }
             if(pte->PAGEDOUT==1) {
                 if(pte->MAPPED) {
+                    cost += FI_cost;
+                    pstatList[current_process->_pid].FI += 1;
                     printf(" %s\n", FIN.c_str());
                 } else {
+                    cost += I_cost;
+                    pstatList[current_process->_pid].I += 1;
                     printf(" %s\n", IN.c_str());
                 }
             } else {
                 // not pagedout before 
                 if(pte->MAPPED==0) {
+                    cost += Z_cost;
+                    pstatList[current_process->_pid].Z += 1;
                     printf(" %s\n", ZERO.c_str());
                 } else {
+                    cost += FI_cost;
+                    pstatList[current_process->_pid].FI += 1;
                     printf(" %s\n", FIN.c_str());
                 }
             }
             // MAP part
+            pstatList[current_process->_pid].M += 1;
+            cost += M_cost;
             printf(" %s %d\n", MAP.c_str(), newframe->FRAME_ADDR);
             pte->FRAME_ADDR = newframe->FRAME_ADDR;
             newframe->PID = current_process->_pid;
@@ -273,6 +349,8 @@ void Simulation() {
         if(operation=='w') {
             if(pte->WRITE_PROTECT) {
                 pte->REFERENCED = 1;
+                pstatList[current_process->_pid].SP += 1;
+                cost += SP_cost;
                 printf(" %s\n", SEGPROT.c_str());
             } else {
                 pte->REFERENCED = 1;
@@ -285,8 +363,34 @@ void Simulation() {
     }
 }
 
-public void Summary() {
-    
+void Summary() {
+    for(int i=0; i<procList.size(); i++) {
+        printf("PT[%d]:", i);
+        for(int j=0; j<MAX_VPAGES; j++) {
+            pte_t pte = procList[i].page_table[j];
+            if(pte.VALID==0||pte.PRESENT==0) {
+                if(pte.PAGEDOUT==1) {
+                    printf(" #");
+                } else {
+                    printf(" *");
+                }
+            } else {
+                printf(" %d:%c%c%c", j, pte.REFERENCED?'R':'-', pte.MODIFIED?'M':'-', pte.PAGEDOUT?'S':'-');
+            }
+        }
+        printf("\n");
+    }
+    printf("FT:");
+    for(int i=0; i<MAX_FRAMES; i++) {
+        if(frame_table[i].ACCESSED==1) {
+            printf(" %d:%d", frame_table[i].PID, frame_table[i].VPAGE_ADDR);
+        }
+    }
+    printf("\n");
+    for(int i=0; i<procList.size(); i++) {
+        printf("PROC[%d]: U=%lu M=%lu I=%lu O=%lu FI=%lu FO=%lu Z=%lu SV=%lu SP=%lu\n", i, pstatList[i].U, pstatList[i].M,pstatList[i].I,pstatList[i].O,pstatList[i].FI,pstatList[i].FO,pstatList[i].Z,pstatList[i].SV,pstatList[i].SP);
+    }
+    printf("TOTALCOST %lu %lu %lu %llu %lu\n", inst_count, ctx_switches, process_exits, cost, sizeof(pte_t));
 }
 
 int main(int argc, char *argv[]) {
@@ -322,6 +426,8 @@ int main(int argc, char *argv[]) {
         }
         int vmaNum = stoi(line);
         Process proc(pid++, vmaNum);
+        Pstat pstat;
+        pstatList.push_back(pstat);
         for(int i=0; i<vmaNum; i++) {
             std::getline(inputFile, line, '\n');
             // split string by delimiter white space
