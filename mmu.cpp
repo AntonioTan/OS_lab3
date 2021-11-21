@@ -61,6 +61,10 @@ const static string OUT = "OUT";
 const static string SEGV = "SEGV";
 const static string SEGPROT = "SEGPROT";
 const static string ZERO = "ZERO";
+const static string FIFO_alg = "FIFO";
+const static string Clock_alg = "Clock";
+const static string NRU_alg = "NRU";
+const static string Random_alg = "Random";
 
 const static int RW_cost = 1;
 const static int switch_cost = 130;
@@ -83,7 +87,7 @@ unsigned long process_exits = 0;
 unsigned long long cost = 0;
 
 
-string INPUT_FILE = "./inputs/in11";
+string INPUT_FILE = "./inputs/in10";
 deque<int> randvals;
 vector<Process> procList;
 vector<Pstat> pstatList;
@@ -94,6 +98,8 @@ Pager* THE_PAGER;
 Process* current_process;
 pte_t* current_page;
 int RM_class[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+string alg_name;
+int last_inst_cnt = 0;
 
 class Pstat {
     public:
@@ -204,7 +210,33 @@ class Clock : public Pager {
 
 };
 
-
+class NRU : public Pager {
+    public:
+        int hand;
+        NRU() {
+            hand = 0;
+        }
+        frame_t *select_victim_frame() {
+            for(int i=0; i<4; i++) {
+                for(int j=0; j<MAX_FRAMES; j++) {
+                    int index = (hand+j)%MAX_FRAMES;
+                    pte_t pte = pidvpn_to_pte(frame_table[index].PID, frame_table[index].VPAGE_ADDR);
+                    if(pte.REFERENCED==RM_class[i][0]&&pte.MODIFIED==RM_class[i][1]) {
+                        hand = (index+1)%MAX_FRAMES;
+                        if(inst_count-last_inst_cnt>=50) {
+                            for(int z=0; z<MAX_FRAMES; z++) {
+                                int cur_index = (hand+z)%MAX_FRAMES;
+                               (&pidvpn_to_pte(frame_table[cur_index].PID, frame_table[cur_index].VPAGE_ADDR))->REFERENCED = 0;
+                            }
+                            last_inst_cnt = inst_count;
+                        }
+                        return &frame_table[index];
+                    }
+                }
+            }
+            return &frame_table[hand];
+        }
+};
 
 frame_t *allocate_frame_from_free_list() {
     if(free_pool.empty()) {
@@ -250,6 +282,14 @@ bool get_next_instruction(char *operation, int *vpage) {
         *vpage = nextInst.vpage_id;
         instList.pop_front();
         return true;
+    }
+}
+
+void resetRef() {
+    for(int i=0; i<MAX_FRAMES; i++) {
+        if(frame_table[i].ACCESSED) {
+            (&pidvpn_to_pte(frame_table[i].PID, frame_table[i].VPAGE_ADDR))->REFERENCED = 0;
+        }
     }
 }
 
@@ -368,6 +408,7 @@ void Simulation() {
             newframe->PID = current_process->_pid;
             newframe->VPAGE_ADDR = vpage;
             pte->PRESENT = 1;
+            // reeset ref for NRU algorithm
         }
         // the vpage is backed by a frame and the instruction can proceed in hardware
         if(operation=='w') {
@@ -418,6 +459,8 @@ void Summary() {
 }
 
 int main(int argc, char *argv[]) {
+    alg_name = NRU_alg;
+    THE_PAGER = new NRU();
     // read input 
     string line;
     // read rand file 
@@ -494,7 +537,6 @@ int main(int argc, char *argv[]) {
         frame_table[i].ACCESSED = 0;
         free_pool.push_back(&frame_table[i]);
     }
-    THE_PAGER = new Clock();
     Simulation();
     Summary();
     
