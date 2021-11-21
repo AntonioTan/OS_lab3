@@ -14,6 +14,8 @@ class Pstat;
 class Process;
 class Pager;
 class FIFO;
+class Clock;
+class NRU;
 
 typedef struct {
     unsigned PRESENT:1;
@@ -48,7 +50,7 @@ typedef struct {
 
 
 // define const global variables
-const static int MAX_FRAMES = 16;
+const static int MAX_FRAMES = 32;
 const static int MAX_VPAGES = 64;
 const static string MAP = "MAP";
 const static string UNMAP = "UNMAP";
@@ -91,6 +93,7 @@ frame_t frame_table[MAX_FRAMES];
 Pager* THE_PAGER;
 Process* current_process;
 pte_t* current_page;
+int RM_class[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
 
 class Pstat {
     public:
@@ -183,6 +186,26 @@ class FIFO : public Pager{
         }
 };
 
+class Clock : public Pager {
+    public:
+        int hand;
+        Clock() {
+            hand = 0;
+        }
+        frame_t *select_victim_frame() {
+            while(pidvpn_to_pte(frame_table[hand].PID, frame_table[hand].VPAGE_ADDR).REFERENCED==1) {
+                (&pidvpn_to_pte(frame_table[hand].PID, frame_table[hand].VPAGE_ADDR))->REFERENCED = 0;
+                hand = (hand+1)%MAX_FRAMES;
+            }
+            frame_t *rst = &frame_table[hand++];
+            hand = hand%MAX_FRAMES;
+            return rst;
+        }
+
+};
+
+
+
 frame_t *allocate_frame_from_free_list() {
     if(free_pool.empty()) {
         return NULL;
@@ -236,9 +259,6 @@ void Simulation() {
     while (get_next_instruction(&operation, &vpage)) {
         // TODO: handle special case of “c” and “e” instruction 
         printf("%lu: ==> %c %d\n", inst_count++, operation, vpage);
-        if(operation=='r'||operation=='w') {
-            cost += 1;
-        }
         if(operation=='c') {
             current_process = &procList[vpage];
             ctx_switches += 1;
@@ -276,6 +296,10 @@ void Simulation() {
         }
         // now the real instructions for read and write
         pte_t* pte = &(current_process->page_table[vpage]);
+        if(operation=='r'||operation=='w') {
+            cost += 1;
+            pte->REFERENCED = 1;    
+        }
         if(pte->PRESENT!=1) {
             // this pte can be invalid
             // this in reality generates the page fault exception and now you execute 
@@ -470,7 +494,7 @@ int main(int argc, char *argv[]) {
         frame_table[i].ACCESSED = 0;
         free_pool.push_back(&frame_table[i]);
     }
-    THE_PAGER = new FIFO();
+    THE_PAGER = new Clock();
     Simulation();
     Summary();
     
