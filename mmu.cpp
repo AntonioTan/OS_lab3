@@ -19,6 +19,7 @@ class Clock;
 class NRU;
 class Random;
 class Aging;
+class WorkingSet;
 int myrandom();
 
 typedef struct {
@@ -39,6 +40,7 @@ typedef struct {
     unsigned int PID: 4;
     unsigned int ACCESSED: 1;
     unsigned AGE;
+    unsigned long lastTime;
 } frame_t;
 
 typedef struct {
@@ -71,7 +73,9 @@ const static string Clock_alg = "Clock";
 const static string NRU_alg = "NRU";
 const static string Random_alg = "Random";
 const static string Aging_alg = "Aging";
+const static string WorkingSet_alg = "WorkingSet";
 
+const static int TAU = 49;
 const static int RW_cost = 1;
 const static int switch_cost = 130;
 const static int exit_cost = 1250;
@@ -93,7 +97,7 @@ unsigned long process_exits = 0;
 unsigned long long cost = 0;
 
 
-string INPUT_FILE = "./inputs/in11";
+string INPUT_FILE = "./inputs/in10";
 deque<int> randvals;
 vector<Process> procList;
 vector<Pstat> pstatList;
@@ -297,6 +301,40 @@ class Aging : public Pager {
 
 };
 
+class WorkingSet : public Pager {
+    public:
+        int hand;
+        WorkingSet() {
+            hand = 0;
+        }
+        frame_t *select_victim_frame() {
+            int index = hand;
+            for(int i=0; i<MAX_FRAMES; i++) {
+                int curIndex = (hand+i)%MAX_FRAMES;
+                frame_t *curFrame = &frame_table[curIndex];
+                pte_t *curPte = &pidvpn_to_pte(curFrame->PID, curFrame->VPAGE_ADDR);
+                if(curPte->REFERENCED) {
+                    curFrame->lastTime = inst_count;
+                    curPte->REFERENCED = 0;
+                } else {
+                    if(inst_count-curFrame->lastTime>TAU) {
+                        hand = (curIndex+1)%MAX_FRAMES;
+                        return curFrame;
+                    } else {
+                        if(curFrame->lastTime<frame_table[index].lastTime) {
+                            index = curIndex;
+                        }
+                    }
+                }
+            }
+            hand = (index+1)%MAX_FRAMES;
+            return &frame_table[index];
+        }
+        void resetAge(int target) {
+
+        }
+};
+
 frame_t *allocate_frame_from_free_list() {
     if(free_pool.empty()) {
         return NULL;
@@ -389,6 +427,7 @@ void Simulation() {
                         curframe->VPAGE_ADDR = 0;
                         curframe->ACCESSED = 0;
                         curframe->AGE = 0;
+                        curframe->lastTime = 0;
                     }
                 }
                 curpte->REFERENCED = 0;
@@ -469,6 +508,8 @@ void Simulation() {
                     }
                 }
                 // MAP part
+                // when you map a frame, you must set its time of last use to the current time
+                newframe->lastTime = inst_count;
                 pstatList[current_process->_pid].M += 1;
                 cost += M_cost;
                 printf(" %s %d\n", MAP.c_str(), newframe->FRAME_ADDR);
@@ -533,8 +574,8 @@ void Summary() {
 }
 
 int main(int argc, char *argv[]) {
-    alg_name = Aging_alg;
-    THE_PAGER = new Aging();
+    alg_name = WorkingSet_alg;
+    THE_PAGER = new WorkingSet();
     // read input 
     string line;
     // read rand file 
@@ -610,6 +651,7 @@ int main(int argc, char *argv[]) {
         frame_table[i].VPAGE_ADDR = 0;
         frame_table[i].ACCESSED = 0;
         frame_table[i].AGE = 0;
+        frame_table[i].lastTime = 0;
         free_pool.push_back(&frame_table[i]);
     }
     Simulation();
