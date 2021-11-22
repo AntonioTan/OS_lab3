@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <set>
 #include <math.h>
+#include <unistd.h> 
+
 #define  pidvpn_to_pte(pid,vpn)    (procList[pid].page_table[vpn])
 
 using namespace std;
@@ -57,7 +59,7 @@ typedef struct {
 
 
 // define const global variables
-const static int MAX_FRAMES = 32;
+int MAX_FRAMES = 32;
 const static int MAX_VPAGES = 64;
 const static string MAP = "MAP";
 const static string UNMAP = "UNMAP";
@@ -98,18 +100,20 @@ unsigned long long cost = 0;
 
 
 string INPUT_FILE = "./inputs/in10";
+string RFILE;
 deque<int> randvals;
 vector<Process> procList;
 vector<Pstat> pstatList;
 deque<instruction> instList;
 deque<frame_t *> free_pool;
-frame_t frame_table[MAX_FRAMES];
+frame_t *frame_table;
 Pager* THE_PAGER;
 Process* current_process;
 pte_t* current_page;
 int RM_class[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
-string alg_name;
 int last_inst_cnt = 0;
+char alg_type;
+bool whetherO=false, whetherP=false, whetherF=false, whetherS=false;
 
 class Pstat {
     public:
@@ -275,21 +279,18 @@ class Aging : public Pager {
             hand = 0;
         }
         frame_t *select_victim_frame() {
-            // printf("FT\n");
             int index = hand;
             for(int i=0; i<MAX_FRAMES; i++) {
                 int curIndex = (hand+i)%MAX_FRAMES;
                 frame_t *curFrame = &frame_table[curIndex];
-                curFrame->AGE /= 2;
+                curFrame->AGE >>= 1;
                 if(pidvpn_to_pte(curFrame->PID, curFrame->VPAGE_ADDR).REFERENCED) {
-                    // curFrame->AGE = (curFrame->AGE | 0x80000000);
-                    curFrame->AGE += pow(2, 31);
+                    curFrame->AGE = (curFrame->AGE | 0x80000000);
                 }
                 (&pidvpn_to_pte(curFrame->PID, curFrame->VPAGE_ADDR))->REFERENCED = 0;
                 if(curFrame->AGE<frame_table[index].AGE) {
                     index = curIndex;
                 }
-                // printf("%d: %d\n", i, frame_table[index].AGE);
             }
             frame_t *rst = &frame_table[index];
             hand = (index+1)%MAX_FRAMES;
@@ -396,7 +397,9 @@ void Simulation() {
     int vpage = 0;
     while (get_next_instruction(&operation, &vpage)) {
         // TODO: handle special case of “c” and “e” instruction 
-        printf("%lu: ==> %c %d\n", inst_count++, operation, vpage);
+        if(whetherO) {
+            printf("%lu: ==> %c %d\n", inst_count++, operation, vpage);
+        }
         if(operation=='c') {
             current_process = &procList[vpage];
             ctx_switches += 1;
@@ -406,7 +409,9 @@ void Simulation() {
         if(operation=='e') {
             process_exits += 1;
             cost += exit_cost;
-            printf("EXIT current process %d\n", current_process->_pid);
+            if(whetherO) {
+                printf("EXIT current process %d\n", current_process->_pid);
+            }
             set<int> unmap_frame_set;
             for(int i=0; i<MAX_VPAGES; i++) {
                 pte_t *curpte = &pidvpn_to_pte(current_process->_pid, i);
@@ -416,12 +421,16 @@ void Simulation() {
                         unmap_frame_set.insert(curframe->FRAME_ADDR);
                         pstatList[current_process->_pid].U += 1;
                         cost += U_cost;
-                        printf(" %s %d:%d\n", UNMAP.c_str(), curframe->PID, curframe->VPAGE_ADDR);
+                        if(whetherO) {
+                            printf(" %s %d:%d\n", UNMAP.c_str(), curframe->PID, curframe->VPAGE_ADDR);
+                        }
                         free_pool.push_back(curframe);
                         if(curpte->MODIFIED&&curpte->MAPPED) {
                             pstatList[current_process->_pid].FO += 1;
                             cost += FO_cost;
-                            printf(" %s\n", FOUT.c_str());
+                            if(whetherO) {
+                                printf(" %s\n", FOUT.c_str());
+                            }
                         }
                         curframe->PID = 0;
                         curframe->VPAGE_ADDR = 0;
@@ -455,7 +464,9 @@ void Simulation() {
                         // raise SEGV
                         pstatList[current_process->_pid].SV += 1;
                         cost += SV_cost;
-                        printf(" %s\n", SEGV.c_str());
+                        if(whetherO) {
+                            printf(" %s\n", SEGV.c_str());
+                        }
                         // next inst
                         continue;
                 } 
@@ -468,7 +479,9 @@ void Simulation() {
                 } else {
                     pstatList[newframe->PID].U += 1;
                     cost += U_cost;
-                    printf(" %s %d:%d\n", UNMAP.c_str(), newframe->PID, newframe->VPAGE_ADDR);
+                    if(whetherO) {
+                        printf(" %s %d:%d\n", UNMAP.c_str(), newframe->PID, newframe->VPAGE_ADDR);
+                    }
                     last_pte->PRESENT = 0;
                     if(last_pte->MODIFIED) {
                         // (note once the PAGEDOUT flag is set it will never be reset as it indicates there is content on the swap device
@@ -476,12 +489,16 @@ void Simulation() {
                         if(last_pte->MAPPED) {
                             cost += FO_cost;
                             pstatList[newframe->PID].FO += 1;
-                            printf(" %s\n", FOUT.c_str());
+                            if(whetherO) {
+                                printf(" %s\n", FOUT.c_str());
+                            }
                         } else {
                             pstatList[newframe->PID].O += 1;
                             last_pte->PAGEDOUT = 1;
                             cost += O_cost;
-                            printf(" %s\n", OUT.c_str());
+                            if(whetherO) {
+                                printf(" %s\n", OUT.c_str());
+                            }
                         }
                     }
                 }
@@ -489,22 +506,30 @@ void Simulation() {
                     if(pte->MAPPED) {
                         cost += FI_cost;
                         pstatList[current_process->_pid].FI += 1;
-                        printf(" %s\n", FIN.c_str());
+                        if(whetherO) {
+                            printf(" %s\n", FIN.c_str());
+                        }
                     } else {
                         cost += I_cost;
                         pstatList[current_process->_pid].I += 1;
-                        printf(" %s\n", IN.c_str());
+                        if(whetherO) {
+                            printf(" %s\n", IN.c_str());
+                        }
                     }
                 } else {
                     // not pagedout before 
                     if(pte->MAPPED==0) {
                         cost += Z_cost;
                         pstatList[current_process->_pid].Z += 1;
-                        printf(" %s\n", ZERO.c_str());
+                        if(whetherO) {
+                            printf(" %s\n", ZERO.c_str());
+                        }
                     } else {
                         cost += FI_cost;
                         pstatList[current_process->_pid].FI += 1;
-                        printf(" %s\n", FIN.c_str());
+                        if(whetherO) {
+                            printf(" %s\n", FIN.c_str());
+                        }
                     }
                 }
                 // MAP part
@@ -512,7 +537,9 @@ void Simulation() {
                 newframe->lastTime = inst_count;
                 pstatList[current_process->_pid].M += 1;
                 cost += M_cost;
-                printf(" %s %d\n", MAP.c_str(), newframe->FRAME_ADDR);
+                if(whetherO) {
+                    printf(" %s %d\n", MAP.c_str(), newframe->FRAME_ADDR);
+                }
                 THE_PAGER->resetAge(newframe->FRAME_ADDR);
                 pte->FRAME_ADDR = newframe->FRAME_ADDR;
                 newframe->PID = current_process->_pid;
@@ -528,7 +555,9 @@ void Simulation() {
                     pte->REFERENCED = 1;
                     pstatList[current_process->_pid].SP += 1;
                     cost += SP_cost;
-                    printf(" %s\n", SEGPROT.c_str());
+                    if(whetherO) {
+                        printf(" %s\n", SEGPROT.c_str());
+                    }
                 } else {
                     pte->REFERENCED = 1;
                     pte->MODIFIED = 1;
@@ -542,45 +571,109 @@ void Simulation() {
 }
 
 void Summary() {
-    for(int i=0; i<procList.size(); i++) {
-        printf("PT[%d]:", i);
-        for(int j=0; j<MAX_VPAGES; j++) {
-            pte_t pte = procList[i].page_table[j];
-            if(pte.VALID==0||pte.PRESENT==0) {
-                if(pte.PAGEDOUT==1) {
-                    printf(" #");
+    if(whetherP) {
+        for(int i=0; i<procList.size(); i++) {
+            printf("PT[%d]:", i);
+            for(int j=0; j<MAX_VPAGES; j++) {
+                pte_t pte = procList[i].page_table[j];
+                if(pte.VALID==0||pte.PRESENT==0) {
+                    if(pte.PAGEDOUT==1) {
+                        printf(" #");
+                    } else {
+                        printf(" *");
+                    }
                 } else {
-                    printf(" *");
+                    printf(" %d:%c%c%c", j, pte.REFERENCED?'R':'-', pte.MODIFIED?'M':'-', pte.PAGEDOUT?'S':'-');
                 }
+            }
+            printf("\n");
+        }
+    }
+    if(whetherF) {
+        printf("FT:");
+        for(int i=0; i<MAX_FRAMES; i++) {
+            if(frame_table[i].ACCESSED==1) {
+                printf(" %d:%d", frame_table[i].PID, frame_table[i].VPAGE_ADDR);
             } else {
-                printf(" %d:%c%c%c", j, pte.REFERENCED?'R':'-', pte.MODIFIED?'M':'-', pte.PAGEDOUT?'S':'-');
+                printf(" *");
             }
         }
         printf("\n");
     }
-    printf("FT:");
-    for(int i=0; i<MAX_FRAMES; i++) {
-        if(frame_table[i].ACCESSED==1) {
-            printf(" %d:%d", frame_table[i].PID, frame_table[i].VPAGE_ADDR);
-        } else {
-            printf(" *");
+    if(whetherS) {
+        for(int i=0; i<procList.size(); i++) {
+            printf("PROC[%d]: U=%lu M=%lu I=%lu O=%lu FI=%lu FO=%lu Z=%lu SV=%lu SP=%lu\n", i, pstatList[i].U, pstatList[i].M,pstatList[i].I,pstatList[i].O,pstatList[i].FI,pstatList[i].FO,pstatList[i].Z,pstatList[i].SV,pstatList[i].SP);
         }
+        printf("TOTALCOST %lu %lu %lu %llu %lu\n", inst_count, ctx_switches, process_exits, cost, sizeof(pte_t));
     }
-    printf("\n");
-    for(int i=0; i<procList.size(); i++) {
-        printf("PROC[%d]: U=%lu M=%lu I=%lu O=%lu FI=%lu FO=%lu Z=%lu SV=%lu SP=%lu\n", i, pstatList[i].U, pstatList[i].M,pstatList[i].I,pstatList[i].O,pstatList[i].FI,pstatList[i].FO,pstatList[i].Z,pstatList[i].SV,pstatList[i].SP);
-    }
-    printf("TOTALCOST %lu %lu %lu %llu %lu\n", inst_count, ctx_switches, process_exits, cost, sizeof(pte_t));
 }
 
 int main(int argc, char *argv[]) {
-    alg_name = WorkingSet_alg;
-    THE_PAGER = new WorkingSet();
     // read input 
     string line;
+    int c;
+    int index;
+    opterr = 0;
+    while ((c = getopt (argc, argv, "fao:")) != -1) {
+        switch (c)
+        {
+        case 'f':
+            sscanf(optarg+1, "%d", &MAX_FRAMES);
+            break;
+        case 'a':
+            sscanf(optarg+1, "%c", &alg_type);
+        case 'o':
+            string optionStr;
+            sscanf(optarg+1, "%s", &optionStr);
+            for(int i=0; i<optionStr.size(); i++) {
+                char curC = optionStr.at(i);
+                if(curC=='O') {
+                    whetherO = true;
+                } else if(curC=='P') {
+                    whetherP = true;
+                } else if(curC=='F') {
+                    whetherF = true;
+                } else if(curC=='S') {
+                    whetherS = true;
+                }
+            }
+            break;
+        }
+    }
+    if(optind<argc) {
+        INPUT_FILE = argv[optind];
+    } else {
+        cout << "Missing Input File!" << endl;
+        return 0;
+    }
+    if(optind+1<argc) {
+        RFILE = argv[optind+1];
+    } else {
+        cout << "Missing Rfile!" << endl;
+        return 0;
+    }
+
+    if(alg_type=='f') {
+        THE_PAGER = new FIFO();
+    } else if(alg_type=='r') {
+        THE_PAGER = new Random();
+    } else if(alg_type=='c') {
+        THE_PAGER = new Clock();
+    } else if(alg_type=='e') {
+        THE_PAGER = new NRU();
+    } else if(alg_type=='a') {
+        THE_PAGER = new Aging();
+    } else if(alg_type=='w') {
+        THE_PAGER = new WorkingSet();
+    } else {
+        printf("No such algorithm!\n");
+    }
+
+    frame_table = new frame_t[MAX_FRAMES];
+    
     // read rand file 
     fstream randFile;
-    randFile.open("./inputs/rfile", fstream::in);
+    randFile.open(RFILE, fstream::in);
     std::getline(randFile, line, '\n');
     int randCnt = stoi(line);
     while(!randFile.eof()) {
