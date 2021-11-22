@@ -8,6 +8,10 @@
 #include <set>
 #include <math.h>
 #include <unistd.h> 
+#include <stdio.h>
+#include <cstring>
+#include <algorithm>
+#include <climits>
 
 #define  pidvpn_to_pte(pid,vpn)    (procList[pid].page_table[vpn])
 
