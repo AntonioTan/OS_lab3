@@ -99,7 +99,7 @@ unsigned long process_exits = 0;
 unsigned long long cost = 0;
 
 
-string INPUT_FILE = "./inputs/in10";
+string INPUT_FILE;
 string RFILE;
 deque<int> randvals;
 vector<Process> procList;
@@ -614,17 +614,19 @@ int main(int argc, char *argv[]) {
     int c;
     int index;
     opterr = 0;
-    while ((c = getopt (argc, argv, "fao:")) != -1) {
+
+    while ((c = getopt (argc, argv, "f:a:o:")) != -1) {
         switch (c)
         {
         case 'f':
-            sscanf(optarg+1, "%d", &MAX_FRAMES);
+            sscanf(optarg, "%d", &MAX_FRAMES);
             break;
         case 'a':
-            sscanf(optarg+1, "%c", &alg_type);
+            sscanf(optarg, "%c", &alg_type);
+            break;
         case 'o':
-            string optionStr;
-            sscanf(optarg+1, "%s", &optionStr);
+            
+            string optionStr = optarg;
             for(int i=0; i<optionStr.size(); i++) {
                 char curC = optionStr.at(i);
                 if(curC=='O') {
@@ -647,6 +649,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     if(optind+1<argc) {
+        string aa = argv[optind+1];
         RFILE = argv[optind+1];
     } else {
         cout << "Missing Rfile!" << endl;

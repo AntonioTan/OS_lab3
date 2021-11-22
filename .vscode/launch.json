@@ -9,7 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${fileDirname}/${fileBasenameNoExtension}",
-            "args": [],
+            "args": ["-f16", "-ac", "-oOPFS", "./inputs/in11", "./inputs/rfile"],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],
