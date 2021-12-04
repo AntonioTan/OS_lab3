@@ -176,7 +176,7 @@ class Process {
     }
     bool validatePage(int vpage) {
         for(int i=0; i<vma_l.size(); i++) {
-            if(vma_l[i].start_virtual_page<=vpage&&vma_l[i].end_virtual_page>=vpage) {
+            if((vma_l[i].start_virtual_page<=vpage)&&(vma_l[i].end_virtual_page>=vpage)) {
                 page_table[vpage].ACCESSED = 1;
                 page_table[vpage].MAPPED = vma_l[i].filemapped;
                 page_table[vpage].VALID = 1;
@@ -246,7 +246,7 @@ class NRU : public Pager {
                 for(int j=0; j<MAX_FRAMES; j++) {
                     int index = (hand+j)%MAX_FRAMES;
                     pte_t pte = pidvpn_to_pte(frame_table[index].PID, frame_table[index].VPAGE_ADDR);
-                    if(pte.REFERENCED==RM_class[i][0]&&pte.MODIFIED==RM_class[i][1]) {
+                    if((pte.REFERENCED==RM_class[i][0])&&(pte.MODIFIED==RM_class[i][1])) {
                         hand = (index+1)%MAX_FRAMES;
                         if(inst_count-last_inst_cnt>=50) {
                             for(int z=0; z<MAX_FRAMES; z++) {
@@ -580,7 +580,7 @@ void Summary() {
             printf("PT[%d]:", i);
             for(int j=0; j<MAX_VPAGES; j++) {
                 pte_t pte = procList[i].page_table[j];
-                if(pte.VALID==0||pte.PRESENT==0) {
+                if((pte.VALID==0)||(pte.PRESENT==0)) {
                     if(pte.PAGEDOUT==1) {
                         printf(" #");
                     } else {
